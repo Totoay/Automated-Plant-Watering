@@ -19,18 +19,23 @@
 #define PUMP_RELAY_PIN 25      // Water pump relay pin
 
 // Threshold Values
-#define SOIL_THRESHOLD 30      // Soil moisture percentage threshold
+#define WATER_LEVEL_THRESHOLD 50
+#define SOIL_THRESHOLD 30 // Percent
 #define LOW_LIGHT_THRESHOLD 1000
 #define HIGH_TEMP_THRESHOLD 35
 #define LOW_TEMP_THRESHOLD 10
-#define LOW_HUMIDITY_THRESHOLD 30
-#define HIGH_HUMIDITY_THRESHOLD 80
+#define LOW_HUMIDITY_THRESHOLD 40
+#define HIGH_HUMIDITY_THRESHOLD 70
 
+// Blynk
 char auth[] = "NbERJsrZtO8F_L2Ajs_dRpZF-pkbCUiC";
 char ssid[] = "Kaesenbangbang";
 char pass[] = "1212312121";
 
+// Google Sheets
 bool uploadEnable = false;
+unsigned long lastUploadTime = 0;
+const unsigned long uploadInterval = 300000;
 
 // DHT Sensor
 DHT dht(DHTPIN, DHTTYPE);
@@ -55,19 +60,21 @@ void setup() {
 
   // Initialize Pump Relay  
   pinMode(PUMP_RELAY_PIN, OUTPUT);
-  digitalWrite(PUMP_RELAY_PIN, HIGH); // Ensure pump is off initially
+  digitalWrite(PUMP_RELAY_PIN, HIGH); // Pump is OFF
 }
 
 void loop() {
 
   Blynk.run();
 
+  unsigned long currentTime = millis();
+
   if (Serial.available() > 0) {
     String command = Serial.readStringUntil('\n');
     if (command == "enable") {
       uploadEnable = true;
       Serial.println("Upload Enabled.");
-    } else if (command == "disable") {
+    } else if (command == "C") {
       uploadEnable = false;
       Serial.println("Upload Disabled.");
     }
@@ -112,25 +119,13 @@ void loop() {
 
   // Read Water Sensor
   int waterValue = analogRead(WATER_PIN);
-  int waterValueNew = map(waterValue,0,4095,0,1023);
+  Serial.println(waterValue);
+  int waterValueNew = map(waterValue,0,2100,0,100);
   Serial.print("Water Level: ");
   Serial.println(waterValueNew);
   Blynk.virtualWrite(V3, waterValueNew);
 
-  // Soil Moisture and Water Level Logic
-  if (soilMoisturePercent < SOIL_THRESHOLD && waterValueNew > 500) {
-    Serial.println("Soil is dry and water is available. Watering plant...");
-    digitalWrite(PUMP_RELAY_PIN, LOW); // Turn on the pump
-    delay(5000); // Watering duration (adjust as needed)
-    digitalWrite(PUMP_RELAY_PIN, HIGH);  // Turn off the pump
-    Serial.println("Watering complete.");
-  } else if (soilMoisturePercent >= SOIL_THRESHOLD) {
-    Serial.println("Soil moisture is sufficient. No watering needed.");
-  } else {
-    Serial.println("Water level too low. Cannot water the plant.");
-  }
-
-  // Read LDR Sensor
+    // Read LDR Sensor
   int ldrValue = analogRead(LDR_PIN);
   Serial.print("Light Intensity: ");
   Serial.println(ldrValue);
@@ -141,26 +136,51 @@ void loop() {
     Serial.println("Warning: Insufficient light for plant growth. Consider relocating the plant.");
   }
 
+  // Soil Moisture and Water Level Logic
+  if (soilMoisturePercent < SOIL_THRESHOLD && waterValueNew > WATER_LEVEL_THRESHOLD) {
+    int wateringDuration = 5000; // Default watering duration
+
+    // Adjust watering based on humidity
+    if (humidity < LOW_HUMIDITY_THRESHOLD) {
+      wateringDuration = 8000; 
+    } else if (humidity > HIGH_HUMIDITY_THRESHOLD) {
+      wateringDuration = 3000; 
+    } 
+
+    Serial.println("Soil is dry and water is available. Watering plant...");
+    digitalWrite(PUMP_RELAY_PIN, LOW); // Pump is ON
+    delay(wateringDuration);
+    digitalWrite(PUMP_RELAY_PIN, HIGH); // Pump is OFF
+    Serial.println("Watering complete.");
+  } else if (soilMoisturePercent >= SOIL_THRESHOLD) {
+    Serial.println("Soil moisture is sufficient. No watering needed.");
+  } else {
+    Serial.println("Water level too low. Cannot water the plant.");
+  }
+
   // Google Sheets
   if (uploadEnable) {
+    if (currentTime - lastUploadTime >= uploadInterval) {
     if (WiFi.status() == WL_CONNECTED) {
-      HTTPClient http;
-      http.begin("https://script.google.com/macros/s/AKfycbxSydrgDClW2hwk-2BDj3s_0YamJRiR5G2vgHzLahHDexpAhY_DwjfH5Mxn6yxdgidi/exec");
-      http.addHeader("Content-Type", "application/json");
-      String jsonPayload = String("{\"temperature\":") + temperature +
-                     ",\"humidity\":" + humidity +
-                     ",\"soil_moisture\":" + soilMoisturePercent +
-                     ",\"light_intensity\":" + ldrValue +
-                     ",\"water_level\":" + waterValue + "}";
-      int httpResponseCode = http.POST(jsonPayload);
-      if (httpResponseCode > 0) {
-        Serial.println("Data sent successfully");
-      } else {
-        Serial.print("Error sending data: ");
-        Serial.println(httpResponseCode);
+        HTTPClient http;
+        http.begin("YOUR_WEBHOOK_URL");
+        http.addHeader("Content-Type", "application/json");
+        String jsonPayload = String("{\"temperature\":") + temperature +
+                            ",\"humidity\":" + humidity +
+                            ",\"soil_moisture\":" + soilMoisturePercent +
+                            ",\"light_intensity\":" + ldrValue +
+                            ",\"water_level\":" + waterValue + "}";
+        int httpResponseCode = http.POST(jsonPayload);
+        if (httpResponseCode > 0) {
+          Serial.println("Data sent successfully");
+        } else {
+          Serial.print("Error sending data: ");
+          Serial.println(httpResponseCode);
+        }
+        http.end();
       }
-      http.end();
-    }
+    lastUploadTime = currentTime;
+  }
   } else {
     Serial.println("Data upload is disabled.");
   }
@@ -174,9 +194,9 @@ BLYNK_WRITE(V5) {
   int buttonState = param.asInt();
   if (buttonState == 1) {
     Serial.println("Manual watering activated.");
-    digitalWrite(PUMP_RELAY_PIN, LOW); // Turn on the pump
+    digitalWrite(PUMP_RELAY_PIN, LOW); // Pump is ON
   } else {
     Serial.println("Manual watering deactivated.");
-    digitalWrite(PUMP_RELAY_PIN, HIGH); // Turn off the pump
+    digitalWrite(PUMP_RELAY_PIN, HIGH); // Pump is OFF
   }
 }
